@@ -13,6 +13,8 @@ inputs:
 outputs:
   pr-url:
     description: Pull request URL if created
+  session-id:
+    description: AgentBuild session ID (manual trigger run ID) linking all attempts in one run
 
 runs:
   using: composite
