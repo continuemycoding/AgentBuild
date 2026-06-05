@@ -23,6 +23,13 @@ Workflow requirements:
 - steps: checkout, setup toolchain, install deps, build (and test if the project has them)
 - use current official GitHub Actions (actions/checkout@v4, actions/setup-node@v4, etc.)
 
+Artifact upload (required):
+- After a successful build, add a step using actions/upload-artifact@v4 to upload build outputs
+- Infer artifact path(s) from the project — e.g. dist/, build/, target/release/, bin/, out/, .next/, or paths declared in package.json scripts, Cargo.toml, pom.xml, Makefile, etc.
+- Use a descriptive artifact name (e.g. the repo name or project-specific name)
+- Upload all relevant build products; use multiple path entries or globs when needed
+- Set if-no-files-found: error so the workflow fails when no artifacts are produced
+
 Constraints:
 - Only edit CI/build files (.github/workflows/*, and package.json scripts if needed for build)
 - Do not modify src/ or application source code
@@ -436,7 +443,13 @@ async function run(): Promise<void> {
 
   await runAgent(
     cwd,
-    `Fix the CI build failure. Only edit .github/workflows/* and build commands. Do not modify src/ unless absolutely necessary.\n\nLogs:\n${logs}`,
+    `Fix the CI build failure. Only edit .github/workflows/* and build commands. Do not modify src/ unless absolutely necessary.
+
+Requirements:
+- Keep or add a post-build step using actions/upload-artifact@v4 that uploads the project's build outputs
+- Infer correct artifact path(s) from the project; set if-no-files-found: error
+
+Logs:\n${logs}`,
     apiKey,
   );
 

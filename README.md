@@ -1,6 +1,6 @@
 # AgentBuild
 
-GitHub Action：在**你的项目仓库**里自动生成 `build.yml`，构建失败时用 Cursor 修复 CI 配置。
+GitHub Action：在**你的项目仓库**里自动生成 `build.yml`（含构建产物上传），构建失败时用 Cursor 修复 CI 配置。
 
 ## 这是什么
 
