@@ -45,6 +45,8 @@ steps:
 
 `secrets.GITHUB_TOKEN` 是 GitHub 每次运行自动提供的 token，无需手动创建；日志会打印 `GITHUB_TOKEN: set` 或 `not set` 便于排查。
 
+workflow 需声明 `workflows: write` 权限，否则 push `.github/workflows/build.yml` 会被拒绝。
+
 ## 发布本 Action
 
 发布前先构建并提交 `dist/`（消费者运行时依赖它）：

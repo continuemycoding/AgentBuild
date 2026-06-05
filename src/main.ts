@@ -48,57 +48,116 @@ function formatToolArgs(name: string, args: unknown): string {
   }
 }
 
-function logAgentEvent(event: SDKMessage): void {
-  switch (event.type) {
-    case "system":
-      if (event.subtype === "init") {
-        const model =
-          typeof event.model === "object" && event.model && "id" in event.model
-            ? String(event.model.id)
-            : "unknown";
-        core.info(`[agent] initialized (model=${model})`);
-      }
-      break;
-    case "status":
+function streamDelta(seen: string, text: string): { seen: string; delta: string } {
+  if (seen && text.startsWith(seen)) {
+    return { seen: text, delta: text.slice(seen.length) };
+  }
+  return { seen: seen + text, delta: text };
+}
+
+class AgentStreamLogger {
+  private assistantBuf = "";
+  private assistantSeen = "";
+  private thinkingBuf = "";
+  private thinkingSeen = "";
+  private loggedTools = new Set<string>();
+
+  private emitCompleteLines(buf: string, prefix: string): string {
+    let rest = buf;
+    let idx = rest.indexOf("\n");
+    while (idx !== -1) {
+      const line = rest.slice(0, idx).trimEnd();
+      rest = rest.slice(idx + 1);
+      if (line) core.info(`${prefix}${line}`);
+      idx = rest.indexOf("\n");
+    }
+    return rest;
+  }
+
+  onAssistantText(text: string): void {
+    const { seen, delta } = streamDelta(this.assistantSeen, text);
+    this.assistantSeen = seen;
+    if (!delta) return;
+    this.assistantBuf += delta;
+    this.assistantBuf = this.emitCompleteLines(this.assistantBuf, "[agent] ");
+  }
+
+  onThinking(text: string, durationMs?: number): void {
+    const { seen, delta } = streamDelta(this.thinkingSeen, text);
+    this.thinkingSeen = seen;
+    this.thinkingBuf += delta;
+    if (durationMs == null) return;
+    const summary = this.thinkingBuf.replace(/\s+/g, " ").trim();
+    if (summary) {
       core.info(
-        `[agent] ${event.status}${event.message ? `: ${event.message}` : ""}`,
+        `[agent] thinking (${Math.round(durationMs / 1000)}s): ${truncate(summary, 500)}`,
       );
-      break;
-    case "thinking":
-      core.info(`[agent] thinking: ${truncate(event.text.replace(/\s+/g, " ").trim(), 300)}`);
-      break;
-    case "assistant":
-      for (const block of event.message.content) {
-        if (block.type === "text" && block.text.trim()) {
-          for (const line of block.text.trim().split("\n")) {
-            core.info(`[agent] ${line}`);
+    }
+    this.thinkingBuf = "";
+    this.thinkingSeen = "";
+  }
+
+  flush(): void {
+    const tail = this.assistantBuf.trimEnd();
+    if (tail) core.info(`[agent] ${tail}`);
+    this.assistantBuf = "";
+  }
+
+  log(event: SDKMessage): void {
+    switch (event.type) {
+      case "system":
+        if (event.subtype === "init") {
+          const model =
+            typeof event.model === "object" && event.model && "id" in event.model
+              ? String(event.model.id)
+              : "unknown";
+          core.info(`[agent] initialized (model=${model})`);
+        }
+        break;
+      case "status":
+        core.info(
+          `[agent] status: ${event.status}${event.message ? ` — ${event.message}` : ""}`,
+        );
+        break;
+      case "thinking":
+        this.onThinking(event.text, event.thinking_duration_ms);
+        break;
+      case "assistant":
+        for (const block of event.message.content) {
+          if (block.type === "text") {
+            this.onAssistantText(block.text);
+          } else if (block.type === "tool_use") {
+            const detail = formatToolArgs(block.name, block.input);
+            core.info(
+              `[agent] tool → ${block.name}${detail ? `: ${truncate(detail, 300)}` : ""}`,
+            );
           }
-        } else if (block.type === "tool_use") {
-          const detail = formatToolArgs(block.name, block.input);
+        }
+        break;
+      case "tool_call": {
+        const detail = formatToolArgs(event.name, event.args);
+        if (event.status === "running") {
+          const key = `${event.call_id}:running`;
+          if (this.loggedTools.has(key)) break;
+          this.loggedTools.add(key);
           core.info(
-            `[agent] tool → ${block.name}${detail ? `: ${truncate(detail, 300)}` : ""}`,
+            `[agent] ${event.name}…${detail ? ` ${truncate(detail, 300)}` : ""}`,
+          );
+        } else if (event.status === "completed") {
+          core.info(`[agent] ${event.name} ✓`);
+        } else {
+          core.info(`[agent] ${event.name} ✗`);
+        }
+        break;
+      }
+      case "task":
+        if (event.text?.trim()) {
+          core.info(
+            `[agent] task: ${truncate(event.text.replace(/\s+/g, " ").trim(), 300)}`,
           );
         }
-      }
-      break;
-    case "tool_call": {
-      const detail = formatToolArgs(event.name, event.args);
-      if (event.status === "running") {
-        core.info(
-          `[agent] ${event.name}…${detail ? ` ${truncate(detail, 300)}` : ""}`,
-        );
-      } else if (event.status === "completed") {
-        core.info(`[agent] ${event.name} ✓`);
-      } else {
-        core.info(`[agent] ${event.name} ✗`);
-      }
-      break;
+        break;
     }
-    case "task":
-      if (event.text?.trim()) {
-        core.info(`[agent] task: ${truncate(event.text.replace(/\s+/g, " ").trim(), 300)}`);
-      }
-      break;
   }
 }
 
@@ -117,9 +176,11 @@ async function runAgent(
     const run = await agent.send(prompt);
     core.info(`agent run started: agentId=${agent.agentId}, runId=${run.id}`);
 
+    const logger = new AgentStreamLogger();
     for await (const event of run.stream()) {
-      logAgentEvent(event);
+      logger.log(event);
     }
+    logger.flush();
 
     const result = await run.wait();
     if (result.status === "error") {
@@ -181,7 +242,13 @@ async function commitPr(
   core.info(`creating PR: branch=${branch}, title="${title}"`);
   core.info(`git cwd: ${cwd}`);
 
-  const logGit = (line: Buffer) => core.info(line.toString().trimEnd());
+  let lastGitLine = "";
+  const logGit = (line: Buffer) => {
+    const text = line.toString().trimEnd();
+    if (!text || text === lastGitLine) return;
+    lastGitLine = text;
+    core.info(text);
+  };
   await exec("git", ["config", "user.name", "github-actions[bot]"], { cwd });
   await exec(
     "git",
@@ -198,10 +265,17 @@ async function commitPr(
     listeners: { stdout: logGit, stderr: logGit },
   });
   core.info(`git push --force origin ${branch}`);
-  await exec("git", ["push", "--force", "origin", branch], {
-    cwd,
-    listeners: { stdout: logGit, stderr: logGit },
-  });
+  try {
+    await exec("git", ["push", "--force", "origin", branch], {
+      cwd,
+      listeners: { stdout: logGit, stderr: logGit },
+    });
+  } catch {
+    throw new Error(
+      "git push failed: add `workflows: write` to the workflow permissions " +
+        "(required to push .github/workflows/*). See examples/workflow.yml.",
+    );
+  }
 
   const octokit = github.getOctokit(token);
   const { owner, repo } = github.context.repo;
@@ -289,7 +363,7 @@ async function run(): Promise<void> {
       core.setOutput("pr-url", url);
     } else {
       core.warning(
-        "skipping PR: GITHUB_TOKEN not set (ensure checkout + contents/pull-requests write permissions)",
+        "skipping PR: GITHUB_TOKEN not set (ensure checkout + contents/pull-requests/workflows write permissions)",
       );
     }
     core.info("bootstrap finished");
