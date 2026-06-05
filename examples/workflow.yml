@@ -28,3 +28,4 @@ jobs:
           mode: auto
         env:
           CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

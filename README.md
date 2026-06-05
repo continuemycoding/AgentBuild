@@ -40,7 +40,10 @@ steps:
       mode: auto
     env:
       CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
+
+`secrets.GITHUB_TOKEN` 是 GitHub 每次运行自动提供的 token，无需手动创建；日志会打印 `GITHUB_TOKEN: set` 或 `not set` 便于排查。
 
 ## 发布本 Action
 
