@@ -40,12 +40,8 @@ steps:
       mode: auto
     env:
       CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GITHUB_TOKEN: ${{ secrets.GH_PAT }}
 ```
-
-`secrets.GITHUB_TOKEN` 是 GitHub 每次运行自动提供的 token，无需手动创建；日志会打印 `GITHUB_TOKEN: set` 或 `not set` 便于排查。
-
-首次 push 新建的 workflow 文件若被拒绝，需用带 `workflow` scope 的 PAT 替代 `GITHUB_TOKEN`（`workflows` 不是 workflow YAML 里合法的 permissions 项）。
 
 ## 发布本 Action
 
