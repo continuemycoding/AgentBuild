@@ -161,6 +161,73 @@ class AgentStreamLogger {
   }
 }
 
+async function validateSetup(
+  mode: "bootstrap" | "fix",
+  cwd: string,
+  apiKey: string,
+  token: string,
+): Promise<void> {
+  if (!apiKey) throw new Error("CURSOR_API_KEY is not set");
+  if (!token) throw new Error("GITHUB_TOKEN is not set");
+
+  core.info("validating CURSOR_API_KEY...");
+  try {
+    const agent = await Agent.create({
+      apiKey,
+      model: { id: "composer-2.5" },
+      local: { cwd, settingSources: [] },
+    });
+    await agent[Symbol.asyncDispose]();
+  } catch (err) {
+    if (err instanceof CursorAgentError) {
+      throw new Error(`CURSOR_API_KEY invalid: ${err.message}`);
+    }
+    throw err;
+  }
+  core.info("CURSOR_API_KEY: ok");
+
+  core.info("validating GITHUB_TOKEN...");
+  const octokit = github.getOctokit(token);
+  const { owner, repo } = github.context.repo;
+
+  try {
+    await octokit.rest.users.getAuthenticated();
+  } catch {
+    throw new Error("GITHUB_TOKEN authentication failed");
+  }
+
+  const { data: repoData } = await octokit.rest.repos.get({ owner, repo }).catch(() => {
+    throw new Error(`GITHUB_TOKEN cannot access ${owner}/${repo}`);
+  });
+  if (!repoData.permissions?.push) {
+    throw new Error("GITHUB_TOKEN lacks contents: write (push permission)");
+  }
+  if (!repoData.permissions?.pull) {
+    throw new Error("GITHUB_TOKEN lacks pull-requests: write (pull permission)");
+  }
+
+  if (mode === "fix") {
+    try {
+      await octokit.rest.actions.listWorkflowRunsForRepo({ owner, repo, per_page: 1 });
+    } catch {
+      throw new Error("GITHUB_TOKEN lacks actions: read permission");
+    }
+  }
+
+  const meta = await octokit.request("GET /user");
+  const scopes = String(meta.headers["x-oauth-scopes"] ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (scopes.length > 0 && !scopes.includes("workflow")) {
+    throw new Error(
+      "GITHUB_TOKEN missing workflow scope (required to push .github/workflows/*)",
+    );
+  }
+
+  core.info("GITHUB_TOKEN: ok");
+}
+
 async function runAgent(
   cwd: string,
   prompt: string,
@@ -337,12 +404,9 @@ async function run(): Promise<void> {
     core.info("GITHUB_TOKEN: not set");
   }
 
-  if (mode === "bootstrap") {
-    if (!apiKey) {
-      core.setFailed("CURSOR_API_KEY is required for bootstrap mode");
-      return;
-    }
+  await validateSetup(mode, cwd, apiKey, token);
 
+  if (mode === "bootstrap") {
     core.info("scanning project with AI and generating build workflow...");
     await runAgent(cwd, BOOTSTRAP_PROMPT, apiKey);
 
@@ -353,35 +417,22 @@ async function run(): Promise<void> {
     }
     core.info(`workflow ready: ${workflowPath}`);
 
-    if (token) {
-      const url = await commitPr(
-        cwd,
-        token,
-        `agentbuild/bootstrap-${github.context.runId}`,
-        "chore(ci): add build workflow",
-      );
-      core.setOutput("pr-url", url);
-    } else {
-      core.warning(
-        "skipping PR: GITHUB_TOKEN not set (ensure checkout + contents/pull-requests write permissions)",
-      );
-    }
+    const url = await commitPr(
+      cwd,
+      token,
+      `agentbuild/bootstrap-${github.context.runId}`,
+      "chore(ci): add build workflow",
+    );
+    core.setOutput("pr-url", url);
     core.info("bootstrap finished");
-    return;
-  }
-
-  if (!apiKey) {
-    core.setFailed("CURSOR_API_KEY is required for fix mode");
     return;
   }
 
   const runId = github.context.payload.workflow_run?.id;
   if (!runId) {
     core.warning("no workflow_run.id in payload; agent will run without logs");
-  } else if (!token) {
-    core.warning("GITHUB_TOKEN not set; cannot fetch failure logs");
   }
-  const logs = runId && token ? await fetchFailureLogs(token, runId) : "";
+  const logs = runId ? await fetchFailureLogs(token, runId) : "";
 
   await runAgent(
     cwd,
@@ -389,17 +440,13 @@ async function run(): Promise<void> {
     apiKey,
   );
 
-  if (token) {
-    const url = await commitPr(
-      cwd,
-      token,
-      `agentbuild/fix-${github.context.runId}`,
-      "fix(ci): repair build workflow",
-    );
-    core.setOutput("pr-url", url);
-  } else {
-    core.warning("skipping PR: GITHUB_TOKEN not set");
-  }
+  const url = await commitPr(
+    cwd,
+    token,
+    `agentbuild/fix-${github.context.runId}`,
+    "fix(ci): repair build workflow",
+  );
+  core.setOutput("pr-url", url);
   core.info("fix finished");
 }
 
