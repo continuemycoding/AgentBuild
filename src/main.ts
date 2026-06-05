@@ -9,31 +9,44 @@ const BUILD_WORKFLOW = ".github/workflows/build.yml";
 
 type Mode = "bootstrap" | "fix" | "auto";
 
-const BOOTSTRAP_PROMPT = `Scan this repository and create ${BUILD_WORKFLOW}, a GitHub Actions workflow that installs dependencies and builds the project.
+const BOOTSTRAP_PROMPT = `扫描此仓库并创建 ${BUILD_WORKFLOW}，一个用于安装依赖并构建项目的 GitHub Actions workflow。
 
-How to analyze:
-- Read README.md / README.*, CONTRIBUTING, docs, and any setup instructions
-- Inspect manifests and tooling: package.json, lockfiles, pyproject.toml, requirements.txt, go.mod, Cargo.toml, pom.xml, build.gradle, Makefile, Dockerfile, etc.
-- Infer the correct package manager, runtime versions, and build/test commands from the actual project — do not assume a fixed template
+分析方法：
+- 阅读 README.md / README.*、CONTRIBUTING、文档及任何安装说明
+- 检查清单文件与工具链：package.json、lockfile、pyproject.toml、requirements.txt、go.mod、Cargo.toml、pom.xml、build.gradle、Makefile、Dockerfile 等
+- 根据项目实际情况推断正确的包管理器、运行时版本及构建/测试命令 — 不要套用固定模板
 
-Workflow requirements:
+Workflow 要求：
 - name: Build
-- triggers: push to main/master, and pull_request
-- runs-on: ubuntu-latest
-- steps: checkout, setup toolchain, install deps, build (and test if the project has them)
-- use current official GitHub Actions (actions/checkout@v4, actions/setup-node@v4, etc.)
+- 触发条件：推送到 main/master，以及 pull_request
+- runs-on：根据项目需求自动选择合适的 runner
+- 步骤：checkout、配置工具链、安装依赖、构建（若项目有测试则一并运行）
+- 尽量使用官方 GitHub Actions（actions/checkout@v4、actions/setup-node@v4 等）；如有必要可酌情使用第三方 actions
 
-Artifact upload (required):
-- After a successful build, add a step using actions/upload-artifact@v4 to upload build outputs
-- Infer artifact path(s) from the project — e.g. dist/, build/, target/release/, bin/, out/, .next/, or paths declared in package.json scripts, Cargo.toml, pom.xml, Makefile, etc.
-- Use a descriptive artifact name (e.g. the repo name or project-specific name)
-- Upload all relevant build products; use multiple path entries or globs when needed
-- Set if-no-files-found: error so the workflow fails when no artifacts are produced
+产物上传（必需）：
+- 构建成功后，添加使用 actions/upload-artifact@v4 的步骤上传构建产物
+- 使用描述性的 artifact 名称（例如仓库名或项目特定名称）
+- 上传所有相关构建产物；必要时使用多个路径条目或 glob
+- 设置 if-no-files-found: error，以便未产生产物时 workflow 失败
 
-Constraints:
-- Only edit CI/build files (.github/workflows/*, and package.json scripts if needed for build)
-- Do not modify src/ or application source code
-- Write a complete, runnable workflow — no placeholders`;
+约束：
+- 优先编辑 CI/构建相关文件（.github/workflows/*）
+- 尽量不要改动源码，除非不改动源码做不到
+- 编写完整、可运行的 workflow — 不要使用占位符
+- 根据项目配置（构建命令、.gitignore、工具链默认输出等）识别构建产物；PR 不包含这些文件，其他必要修改可一并提交
+- 若本地试跑了构建，提交前还原或清理产生的构建产物，勿将其留在工作区`;
+
+const FIX_PROMPT = `修复 CI 构建失败。
+
+要求：
+- 优先编辑 CI/构建相关文件（.github/workflows/*）
+- 尽量不要改动源码，除非不改动源码做不到
+- 保留或添加构建成功后使用 actions/upload-artifact@v4 上传构建产物的步骤
+- 根据项目分析确定构建产物路径；设置 if-no-files-found: error
+- 根据项目配置（.gitignore、构建命令、工具链默认输出等）识别构建产物；PR 不包含这些文件，其他必要修改可一并提交
+- 若本地试跑了构建，提交前还原或清理产生的构建产物，勿将其留在工作区
+
+日志：`;
 
 function truncate(text: string, max = 500): string {
   return text.length <= max ? text : `${text.slice(0, max)}…`;
@@ -441,17 +454,7 @@ async function run(): Promise<void> {
   }
   const logs = runId ? await fetchFailureLogs(token, runId) : "";
 
-  await runAgent(
-    cwd,
-    `Fix the CI build failure. Only edit .github/workflows/* and build commands. Do not modify src/ unless absolutely necessary.
-
-Requirements:
-- Keep or add a post-build step using actions/upload-artifact@v4 that uploads the project's build outputs
-- Infer correct artifact path(s) from the project; set if-no-files-found: error
-
-Logs:\n${logs}`,
-    apiKey,
-  );
+  await runAgent(cwd, `${FIX_PROMPT}\n${logs}`, apiKey);
 
   const url = await commitPr(
     cwd,
