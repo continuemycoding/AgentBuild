@@ -169,7 +169,13 @@ async function run(): Promise<void> {
   core.info(`event: ${github.context.eventName}`);
   core.info(`repo: ${github.context.repo.owner}/${github.context.repo.repo}`);
   core.info(`CURSOR_API_KEY: ${apiKey ? "set" : "not set"}`);
-  core.info(`GITHUB_TOKEN: ${token ? "set" : "not set"}`);
+  if (token) {
+    core.info(
+      `GITHUB_TOKEN: set (${token.slice(0, 4)}...${token.slice(-4)} len=${token.length})`,
+    );
+  } else {
+    core.info("GITHUB_TOKEN: not set");
+  }
 
   if (mode === "bootstrap") {
     if (!apiKey) {
