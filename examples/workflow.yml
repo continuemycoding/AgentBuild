@@ -1,3 +1,5 @@
+# 复制到你的项目：.github/workflows/agentbuild.yml
+
 name: AgentBuild
 
 on:
@@ -20,7 +22,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ./
+
+      - uses: continuemycoding/AgentBuild@v1
+        with:
+          mode: auto
         env:
           CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

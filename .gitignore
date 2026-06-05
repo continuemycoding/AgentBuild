@@ -1,6 +1,5 @@
 node_modules/
 .npm-cache/
-dist/
 *.tsbuildinfo
 .env
 .DS_Store

@@ -17,12 +17,17 @@ outputs:
 runs:
   using: composite
   steps:
-    - uses: actions/setup-node@v4
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
       with:
         node-version: "22"
-    - shell: bash
+
+    - name: Install AgentBuild runtime
+      shell: bash
       working-directory: ${{ github.action_path }}
-      run: npm ci --cache .npm-cache && npm run build
-    - shell: bash
+      run: npm ci --omit=dev --cache .npm-cache
+
+    - name: Run AgentBuild
+      shell: bash
       working-directory: ${{ github.action_path }}
       run: node dist/index.js
