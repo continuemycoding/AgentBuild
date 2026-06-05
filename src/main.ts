@@ -272,8 +272,8 @@ async function commitPr(
     });
   } catch {
     throw new Error(
-      "git push failed: add `workflows: write` to the workflow permissions " +
-        "(required to push .github/workflows/*). See examples/workflow.yml.",
+      "git push failed: pushing new .github/workflows/* requires a PAT with " +
+        "the workflow scope — replace GITHUB_TOKEN with such a PAT in your workflow env.",
     );
   }
 
@@ -363,7 +363,7 @@ async function run(): Promise<void> {
       core.setOutput("pr-url", url);
     } else {
       core.warning(
-        "skipping PR: GITHUB_TOKEN not set (ensure checkout + contents/pull-requests/workflows write permissions)",
+        "skipping PR: GITHUB_TOKEN not set (ensure checkout + contents/pull-requests write permissions)",
       );
     }
     core.info("bootstrap finished");
