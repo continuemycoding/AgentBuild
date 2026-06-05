@@ -21,15 +21,11 @@ GitHub Action：在**你的项目仓库**里自动生成 `build.yml`，构建失
 你的项目/.github/workflows/agentbuild.yml
 ```
 
-把其中的 `your-org/AgentBuild@v1` 改成你实际发布的地址，例如：
-
-```yaml
-- uses: lin/AgentBuild@v1
-```
-
 **3. 运行**
 
-Actions → AgentBuild → Run workflow（首次会 bootstrap 生成 `Build` workflow 并开 PR）
+Actions → AgentBuild → Run workflow（首次 bootstrap 会用 AI 扫描项目并生成 `Build` workflow，然后开 PR）
+
+> bootstrap 模式需要 `CURSOR_API_KEY`。
 
 之后 `Build` 失败会自动触发 fix。
 
@@ -45,11 +41,6 @@ steps:
     env:
       CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
 ```
-
-注意：
-
-- `checkout` 在你的项目 workflow 里做，Action 操作的是**你的代码仓库**
-- 不要用 `uses: ./`，那是 Action 作者本地调试用的
 
 ## 发布本 Action
 

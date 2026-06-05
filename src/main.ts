@@ -2,97 +2,38 @@ import * as core from "@actions/core";
 import * as github from "@actions/github";
 import { exec } from "@actions/exec";
 import { Agent, CursorAgentError } from "@cursor/sdk";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 
 const BUILD_WORKFLOW = ".github/workflows/build.yml";
 
 type Mode = "bootstrap" | "fix" | "auto";
 
-interface ProjectInfo {
-  kind: string;
-  install: string;
-  build: string;
-  setup: string;
-}
+const BOOTSTRAP_PROMPT = `Scan this repository and create ${BUILD_WORKFLOW}, a GitHub Actions workflow that installs dependencies and builds the project.
 
-function detectProject(root: string): ProjectInfo {
-  if (existsSync(join(root, "package.json"))) {
-    if (existsSync(join(root, "pnpm-lock.yaml"))) {
-      return {
-        kind: "pnpm",
-        setup: `      - uses: pnpm/action-setup@v4\n        with:\n          version: 9\n      - uses: actions/setup-node@v4\n        with:\n          node-version: 22\n          cache: pnpm`,
-        install: "pnpm install --frozen-lockfile",
-        build: "pnpm run build",
-      };
-    }
-    if (existsSync(join(root, "yarn.lock"))) {
-      return {
-        kind: "yarn",
-        setup: `      - uses: actions/setup-node@v4\n        with:\n          node-version: 22\n          cache: yarn`,
-        install: "yarn install --frozen-lockfile",
-        build: "yarn build",
-      };
-    }
-    return {
-      kind: "npm",
-      setup: `      - uses: actions/setup-node@v4\n        with:\n          node-version: 22\n          cache: npm`,
-      install: "npm ci",
-      build: "npm run build",
-    };
-  }
+How to analyze:
+- Read README.md / README.*, CONTRIBUTING, docs, and any setup instructions
+- Inspect manifests and tooling: package.json, lockfiles, pyproject.toml, requirements.txt, go.mod, Cargo.toml, pom.xml, build.gradle, Makefile, Dockerfile, etc.
+- Infer the correct package manager, runtime versions, and build/test commands from the actual project — do not assume a fixed template
 
-  if (existsSync(join(root, "go.mod"))) {
-    return {
-      kind: "go",
-      setup: `      - uses: actions/setup-go@v5\n        with:\n          go-version: stable`,
-      install: "go mod download",
-      build: "go build ./...",
-    };
-  }
+Workflow requirements:
+- name: Build
+- triggers: push to main/master, and pull_request
+- runs-on: ubuntu-latest
+- steps: checkout, setup toolchain, install deps, build (and test if the project has them)
+- use current official GitHub Actions (actions/checkout@v4, actions/setup-node@v4, etc.)
 
-  if (existsSync(join(root, "Cargo.toml"))) {
-    return {
-      kind: "rust",
-      setup: `      - uses: dtolnay/rust-toolchain@stable`,
-      install: "cargo fetch",
-      build: "cargo build --release",
-    };
-  }
-
-  return {
-    kind: "unknown",
-    setup: "",
-    install: "true",
-    build: "echo 'unsupported project' && exit 1",
-  };
-}
-
-function generateBuildWorkflow(project: ProjectInfo): string {
-  return `name: Build
-
-on:
-  push:
-    branches: [main, master]
-  pull_request:
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-${project.setup ? project.setup + "\n" : ""}      - name: Install
-        run: ${project.install}
-      - name: Build
-        run: ${project.build}
-`;
-}
+Constraints:
+- Only edit CI/build files (.github/workflows/*, and package.json scripts if needed for build)
+- Do not modify src/ or application source code
+- Write a complete, runnable workflow — no placeholders`;
 
 async function runAgent(
   cwd: string,
   prompt: string,
   apiKey: string,
 ): Promise<string> {
+  core.info("starting Cursor agent...");
   try {
     const result = await Agent.prompt(prompt, {
       apiKey,
@@ -102,6 +43,7 @@ async function runAgent(
     if (result.status === "error") {
       throw new Error(`Agent run failed: ${result.id}`);
     }
+    core.info(`agent finished: status=${result.status}, id=${result.id}`);
     return result.result ?? "";
   } catch (err) {
     if (err instanceof CursorAgentError) {
@@ -112,6 +54,7 @@ async function runAgent(
 }
 
 async function fetchFailureLogs(token: string, runId: number): Promise<string> {
+  core.info(`fetching failure logs for workflow run ${runId}...`);
   const octokit = github.getOctokit(token);
   const { owner, repo } = github.context.repo;
   const jobs = await octokit.rest.actions.listJobsForWorkflowRun({
@@ -120,8 +63,10 @@ async function fetchFailureLogs(token: string, runId: number): Promise<string> {
     run_id: runId,
   });
 
+  core.info(`found ${jobs.data.jobs.length} job(s) in failed run`);
   const parts: string[] = [];
   for (const job of jobs.data.jobs) {
+    core.info(`  job "${job.name}": ${job.conclusion}`);
     parts.push(`Job ${job.name}: ${job.conclusion}`);
     try {
       const logs = await octokit.rest.actions.downloadJobLogsForWorkflowRun({
@@ -132,10 +77,13 @@ async function fetchFailureLogs(token: string, runId: number): Promise<string> {
       const text = typeof logs.data === "string" ? logs.data : "";
       parts.push(text.slice(-6000));
     } catch {
+      core.warning(`  logs unavailable for job "${job.name}"`);
       parts.push("(logs unavailable)");
     }
   }
-  return parts.join("\n");
+  const text = parts.join("\n");
+  core.info(`collected ${text.length} chars of failure logs`);
+  return text;
 }
 
 async function commitPr(
@@ -144,16 +92,30 @@ async function commitPr(
   branch: string,
   title: string,
 ): Promise<string> {
+  core.info(`creating PR: branch=${branch}, title="${title}"`);
+  core.info(`git cwd: ${cwd}`);
+
+  const logGit = (line: Buffer) => core.info(line.toString().trimEnd());
   await exec("git", ["config", "user.name", "github-actions[bot]"], { cwd });
   await exec(
     "git",
     ["config", "user.email", "41898282+github-actions[bot]@users.noreply.github.com"],
     { cwd },
   );
-  await exec("git", ["checkout", "-b", branch], { cwd });
+  core.info(`git checkout -b ${branch}`);
+  await exec("git", ["checkout", "-b", branch], { cwd, listeners: { stdout: logGit } });
+  core.info("git add -A");
   await exec("git", ["add", "-A"], { cwd });
-  await exec("git", ["commit", "-m", title], { cwd });
-  await exec("git", ["push", "--force", "origin", branch], { cwd });
+  core.info(`git commit -m "${title}"`);
+  await exec("git", ["commit", "-m", title], {
+    cwd,
+    listeners: { stdout: logGit, stderr: logGit },
+  });
+  core.info(`git push --force origin ${branch}`);
+  await exec("git", ["push", "--force", "origin", branch], {
+    cwd,
+    listeners: { stdout: logGit, stderr: logGit },
+  });
 
   const octokit = github.getOctokit(token);
   const { owner, repo } = github.context.repo;
@@ -162,6 +124,7 @@ async function commitPr(
     github.context.ref?.replace("refs/heads/", "") ??
     "main";
 
+  core.info(`opening PR: ${owner}/${repo} ${branch} -> ${base}`);
   const pr = await octokit.rest.pulls.create({
     owner,
     repo,
@@ -170,21 +133,22 @@ async function commitPr(
     base,
     body: "Generated by AgentBuild. Please review.",
   });
+  core.info(`PR created: ${pr.data.html_url}`);
   return pr.data.html_url;
 }
 
-function writeBuildWorkflow(cwd: string, content: string): void {
-  const path = join(cwd, BUILD_WORKFLOW);
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, content, "utf8");
-}
-
 function resolveMode(input: Mode, cwd: string): "bootstrap" | "fix" {
-  if (input === "bootstrap" || input === "fix") return input;
+  if (input === "bootstrap" || input === "fix") {
+    core.info(`mode resolved from input: ${input}`);
+    return input;
+  }
   const hasBuild = existsSync(join(cwd, BUILD_WORKFLOW));
   const failed =
     github.context.eventName === "workflow_run" &&
     github.context.payload.workflow_run?.conclusion === "failure";
+  core.info(
+    `auto mode: hasBuild=${hasBuild}, event=${github.context.eventName}, failed=${failed}`,
+  );
   if (!hasBuild) return "bootstrap";
   if (failed) return "fix";
   return "bootstrap";
@@ -200,20 +164,28 @@ async function run(): Promise<void> {
   const token = process.env.GITHUB_TOKEN || "";
 
   core.info(`mode: ${mode}`);
+  core.info(`workspace: ${cwd}`);
+  core.info(`process.cwd: ${process.cwd()}`);
+  core.info(`event: ${github.context.eventName}`);
+  core.info(`repo: ${github.context.repo.owner}/${github.context.repo.repo}`);
+  core.info(`CURSOR_API_KEY: ${apiKey ? "set" : "not set"}`);
+  core.info(`GITHUB_TOKEN: ${token ? "set" : "not set"}`);
 
   if (mode === "bootstrap") {
-    const project = detectProject(cwd);
-    core.info(`detected: ${project.kind}`);
-    const workflow = generateBuildWorkflow(project);
-    writeBuildWorkflow(cwd, workflow);
-
-    if (apiKey) {
-      await runAgent(
-        cwd,
-        `Review and improve ${BUILD_WORKFLOW} for this ${project.kind} project. Only edit CI/build files (.github/workflows/*, package.json scripts). Do not modify src/.`,
-        apiKey,
-      );
+    if (!apiKey) {
+      core.setFailed("CURSOR_API_KEY is required for bootstrap mode");
+      return;
     }
+
+    core.info("scanning project with AI and generating build workflow...");
+    await runAgent(cwd, BOOTSTRAP_PROMPT, apiKey);
+
+    const workflowPath = join(cwd, BUILD_WORKFLOW);
+    if (!existsSync(workflowPath)) {
+      core.setFailed(`${BUILD_WORKFLOW} was not created by agent`);
+      return;
+    }
+    core.info(`workflow ready: ${workflowPath}`);
 
     if (token) {
       const url = await commitPr(
@@ -223,7 +195,12 @@ async function run(): Promise<void> {
         "chore(ci): add build workflow",
       );
       core.setOutput("pr-url", url);
+    } else {
+      core.warning(
+        "skipping PR: GITHUB_TOKEN not set (ensure checkout + contents/pull-requests write permissions)",
+      );
     }
+    core.info("bootstrap finished");
     return;
   }
 
@@ -233,6 +210,11 @@ async function run(): Promise<void> {
   }
 
   const runId = github.context.payload.workflow_run?.id;
+  if (!runId) {
+    core.warning("no workflow_run.id in payload; agent will run without logs");
+  } else if (!token) {
+    core.warning("GITHUB_TOKEN not set; cannot fetch failure logs");
+  }
   const logs = runId && token ? await fetchFailureLogs(token, runId) : "";
 
   await runAgent(
@@ -249,7 +231,10 @@ async function run(): Promise<void> {
       "fix(ci): repair build workflow",
     );
     core.setOutput("pr-url", url);
+  } else {
+    core.warning("skipping PR: GITHUB_TOKEN not set");
   }
+  core.info("fix finished");
 }
 
 run().catch((err: unknown) => {
