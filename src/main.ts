@@ -1,7 +1,7 @@
 import * as core from "@actions/core";
 import * as github from "@actions/github";
 import { exec } from "@actions/exec";
-import { Agent, CursorAgentError } from "@cursor/sdk";
+import { Agent, CursorAgentError, type SDKMessage } from "@cursor/sdk";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
@@ -28,28 +28,114 @@ Constraints:
 - Do not modify src/ or application source code
 - Write a complete, runnable workflow — no placeholders`;
 
+function truncate(text: string, max = 500): string {
+  return text.length <= max ? text : `${text.slice(0, max)}…`;
+}
+
+function formatToolArgs(name: string, args: unknown): string {
+  if (!args || typeof args !== "object") return "";
+  const record = args as Record<string, unknown>;
+  if (name === "Shell" && typeof record.command === "string") {
+    return record.command;
+  }
+  if (typeof record.path === "string") return record.path;
+  if (typeof record.file_path === "string") return record.file_path;
+  if (typeof record.target_file === "string") return record.target_file;
+  try {
+    return truncate(JSON.stringify(args), 200);
+  } catch {
+    return "";
+  }
+}
+
+function logAgentEvent(event: SDKMessage): void {
+  switch (event.type) {
+    case "system":
+      if (event.subtype === "init") {
+        const model =
+          typeof event.model === "object" && event.model && "id" in event.model
+            ? String(event.model.id)
+            : "unknown";
+        core.info(`[agent] initialized (model=${model})`);
+      }
+      break;
+    case "status":
+      core.info(
+        `[agent] ${event.status}${event.message ? `: ${event.message}` : ""}`,
+      );
+      break;
+    case "thinking":
+      core.info(`[agent] thinking: ${truncate(event.text.replace(/\s+/g, " ").trim(), 300)}`);
+      break;
+    case "assistant":
+      for (const block of event.message.content) {
+        if (block.type === "text" && block.text.trim()) {
+          for (const line of block.text.trim().split("\n")) {
+            core.info(`[agent] ${line}`);
+          }
+        } else if (block.type === "tool_use") {
+          const detail = formatToolArgs(block.name, block.input);
+          core.info(
+            `[agent] tool → ${block.name}${detail ? `: ${truncate(detail, 300)}` : ""}`,
+          );
+        }
+      }
+      break;
+    case "tool_call": {
+      const detail = formatToolArgs(event.name, event.args);
+      if (event.status === "running") {
+        core.info(
+          `[agent] ${event.name}…${detail ? ` ${truncate(detail, 300)}` : ""}`,
+        );
+      } else if (event.status === "completed") {
+        core.info(`[agent] ${event.name} ✓`);
+      } else {
+        core.info(`[agent] ${event.name} ✗`);
+      }
+      break;
+    }
+    case "task":
+      if (event.text?.trim()) {
+        core.info(`[agent] task: ${truncate(event.text.replace(/\s+/g, " ").trim(), 300)}`);
+      }
+      break;
+  }
+}
+
 async function runAgent(
   cwd: string,
   prompt: string,
   apiKey: string,
 ): Promise<string> {
   core.info("starting Cursor agent...");
+  const agent = await Agent.create({
+    apiKey,
+    model: { id: "composer-2.5" },
+    local: { cwd, settingSources: [] },
+  });
   try {
-    const result = await Agent.prompt(prompt, {
-      apiKey,
-      model: { id: "composer-2.5" },
-      local: { cwd, settingSources: [] },
-    });
+    const run = await agent.send(prompt);
+    core.info(`agent run started: agentId=${agent.agentId}, runId=${run.id}`);
+
+    for await (const event of run.stream()) {
+      logAgentEvent(event);
+    }
+
+    const result = await run.wait();
     if (result.status === "error") {
       throw new Error(`Agent run failed: ${result.id}`);
     }
-    core.info(`agent finished: status=${result.status}, id=${result.id}`);
+    core.info(
+      `agent finished: status=${result.status}, id=${result.id}${result.durationMs != null ? `, duration=${Math.round(result.durationMs / 1000)}s` : ""}`,
+    );
     return result.result ?? "";
   } catch (err) {
     if (err instanceof CursorAgentError) {
       throw new Error(`Cursor startup failed: ${err.message}`);
     }
     throw err;
+  } finally {
+    await agent[Symbol.asyncDispose]();
   }
 }
 
