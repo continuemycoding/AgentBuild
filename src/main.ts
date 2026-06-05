@@ -403,32 +403,68 @@ async function listSessionPullRequests(
 ): Promise<SessionPr[]> {
   const octokit = github.getOctokit(token);
   const { owner, repo } = github.context.repo;
-
-  const { data } = await octokit.rest.search.issuesAndPullRequests({
-    q: `repo:${owner}/${repo} "agentbuild-session:${sessionId}" in:body type:pr`,
-    per_page: 100,
-  });
+  const branchPrefix = `agentbuild/session-${sessionId}/attempt-`;
 
   const prs: SessionPr[] = [];
-  for (const item of data.items) {
-    const { data: prData } = await octokit.rest.pulls.get({
-      owner,
-      repo,
-      pull_number: item.number,
-    });
-    prs.push({
-      number: prData.number,
-      attempt:
-        parseAttemptFromPrBody(prData.body ?? "") ??
-        parseAttemptFromBranch(prData.head.ref) ??
-        prData.number,
-      branch: prData.head.ref,
-    });
+  for (const state of ["open", "closed"] as const) {
+    let page = 1;
+    while (true) {
+      const { data } = await octokit.rest.pulls.list({
+        owner,
+        repo,
+        state,
+        per_page: 100,
+        page,
+      });
+      for (const pr of data) {
+        if (!pr.head.ref.startsWith(branchPrefix)) continue;
+        prs.push({
+          number: pr.number,
+          attempt:
+            parseAttemptFromBranch(pr.head.ref) ??
+            parseAttemptFromPrBody(pr.body ?? "") ??
+            pr.number,
+          branch: pr.head.ref,
+        });
+      }
+      if (data.length < 100) break;
+      page++;
+    }
   }
 
   prs.sort((a, b) => a.attempt - b.attempt);
   core.info(`session ${sessionId}: ${prs.length} associated PR(s)`);
   return prs;
+}
+
+async function checkoutBranch(cwd: string, branch: string): Promise<void> {
+  core.info(`checking out branch: ${branch}`);
+  let lastGitLine = "";
+  const logGit = (line: Buffer) => {
+    const text = line.toString().trimEnd();
+    if (!text || text === lastGitLine) return;
+    lastGitLine = text;
+    core.info(text);
+  };
+  await exec("git", ["fetch", "origin", branch], {
+    cwd,
+    listeners: { stdout: logGit, stderr: logGit },
+  });
+  await exec("git", ["checkout", branch], {
+    cwd,
+    listeners: { stdout: logGit, stderr: logGit },
+  });
+}
+
+function nextSessionAttempt(
+  sessionPrs: SessionPr[],
+  headBranch?: string,
+): number {
+  const currentAttempt = parseAttemptFromBranch(headBranch ?? "") ?? 0;
+  if (sessionPrs.length === 0) {
+    return currentAttempt > 0 ? currentAttempt + 1 : 1;
+  }
+  return Math.max(...sessionPrs.map((pr) => pr.attempt), currentAttempt) + 1;
 }
 
 async function getLatestFailedBuildRunId(
@@ -611,15 +647,18 @@ function resolveMode(input: Mode, cwd: string): "bootstrap" | "fix" {
     core.info(`mode resolved from input: ${input}`);
     return input;
   }
-  const hasBuild = existsSync(join(cwd, BUILD_WORKFLOW));
   const failed =
     github.context.eventName === "workflow_run" &&
     github.context.payload.workflow_run?.conclusion === "failure";
+  if (failed) {
+    core.info("auto mode: Build workflow failed → fix");
+    return "fix";
+  }
+  const hasBuild = existsSync(join(cwd, BUILD_WORKFLOW));
   core.info(
-    `auto mode: hasBuild=${hasBuild}, event=${github.context.eventName}, failed=${failed}`,
+    `auto mode: hasBuild=${hasBuild}, event=${github.context.eventName}`,
   );
   if (!hasBuild) return "bootstrap";
-  if (failed) return "fix";
   return "bootstrap";
 }
 
@@ -680,13 +719,15 @@ async function run(): Promise<void> {
   if (!runId) {
     core.warning("no workflow_run.id in payload; agent will run without logs");
   }
+  if (!headBranch) {
+    throw new Error("workflow_run missing head_branch; cannot fix CI on PR branch");
+  }
 
   const sessionId = await resolveSessionId(token, headBranch);
+  await checkoutBranch(cwd, headBranch);
+
   const sessionPrs = await listSessionPullRequests(token, sessionId);
-  const attempt =
-    sessionPrs.length > 0
-      ? Math.max(...sessionPrs.map((pr) => pr.attempt)) + 1
-      : 1;
+  const attempt = nextSessionAttempt(sessionPrs, headBranch);
   core.info(`session=${sessionId}, attempt=${attempt}, prior PRs=${sessionPrs.length}`);
 
   const history = await collectSessionFailureHistory(

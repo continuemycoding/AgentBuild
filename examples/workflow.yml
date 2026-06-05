@@ -24,6 +24,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           token: ${{ secrets.GH_PAT }}
+          # Build 失败时检出对应 PR 分支，否则会回到默认分支并重复 bootstrap
+          ref: ${{ github.event.workflow_run.head_branch || github.ref }}
 
       - uses: continuemycoding/AgentBuild@v1
         with:
