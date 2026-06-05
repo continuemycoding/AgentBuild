@@ -22,10 +22,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_PAT }}
 
       - uses: continuemycoding/AgentBuild@v1
         with:
           mode: auto
         env:
           CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
-          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
