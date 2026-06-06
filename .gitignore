@@ -1,0 +1,5 @@
+node_modules/
+.npm-cache/
+*.tsbuildinfo
+.env
+.DS_Store

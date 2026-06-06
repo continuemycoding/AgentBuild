@@ -1,0 +1,35 @@
+# 复制到你的项目：.github/workflows/agentbuild.yml
+
+name: AgentBuild
+
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: [Build]
+    types: [completed]
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+
+jobs:
+  agentbuild:
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'failure')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_PAT }}
+          # Build 失败时检出对应 PR 分支，否则会回到默认分支并重复 bootstrap
+          ref: ${{ github.event.workflow_run.head_branch || github.ref }}
+
+      - uses: continuemycoding/AgentBuild@v1
+        with:
+          mode: auto
+        env:
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}

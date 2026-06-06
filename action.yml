@@ -1,0 +1,35 @@
+name: AgentBuild
+description: Generate build workflow and AI-fix CI on failure
+branding:
+  icon: package
+  color: blue
+
+inputs:
+  mode:
+    description: bootstrap | fix | auto
+    required: false
+    default: auto
+
+outputs:
+  pr-url:
+    description: Pull request URL if created
+  session-id:
+    description: AgentBuild session ID (manual trigger run ID) linking all attempts in one run
+
+runs:
+  using: composite
+  steps:
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: "22"
+
+    - name: Install AgentBuild runtime
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      run: npm ci --omit=dev --cache .npm-cache
+
+    - name: Run AgentBuild
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      run: node dist/index.js
